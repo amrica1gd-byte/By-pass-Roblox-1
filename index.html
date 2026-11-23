@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ابزار عکس ۳۰۰×۳۰۰</title>
+<style>
+  :root{
+    --bg:#0e1319;
+    --panel:#171e28;
+    --line:#2a3544;
+    --ink:#e7edf5;
+    --muted:#8d9bb0;
+    --accent:#5fd0b4;
+    --accent-ink:#06231d;
+    color-scheme: dark;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"Vazirmatn","Tahoma","Segoe UI",system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;
+    padding:20px;
+  }
+  .card{
+    width:100%;max-width:420px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:18px;
+    padding:26px 22px 24px;
+    text-align:center;
+  }
+  h1{font-size:1.25rem;font-weight:700;margin-bottom:6px}
+  p.sub{color:var(--muted);font-size:.9rem;line-height:1.8;margin-bottom:20px}
+  .drop{
+    display:block;cursor:pointer;
+    border:2px dashed var(--line);
+    border-radius:14px;
+    padding:36px 14px;
+    transition:border-color .2s, background .2s;
+  }
+  .drop:hover,.drop.over{border-color:var(--accent);background:rgba(95,208,180,.06)}
+  .drop b{display:block;font-size:1rem;margin-bottom:6px}
+  .drop span{color:var(--muted);font-size:.85rem}
+  input[type=file]{display:none}
+
+  .btn{
+    display:inline-block;width:100%;
+    border:0;border-radius:12px;
+    padding:14px;font:inherit;font-weight:700;font-size:1rem;
+    background:var(--accent);color:var(--accent-ink);
+    cursor:pointer;text-decoration:none;
+  }
+  .btn:active{transform:scale(.98)}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);margin-top:10px;font-weight:500}
+
+  .view{display:none}
+  .view.on{display:block}
+
+  /* loading */
+  .ring{
+    width:84px;height:84px;margin:10px auto 22px;
+    border-radius:50%;
+    border:6px solid var(--line);
+    border-top-color:var(--accent);
+    animation:spin 1s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.ring{animation-duration:3s}}
+  .bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin:6px 0 10px}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
+  .pct{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums}
+  .hint{color:var(--muted);font-size:.85rem;margin-top:4px}
+
+  /* result */
+  .result{
+    width:300px;max-width:100%;aspect-ratio:1/1;
+    display:block;margin:0 auto 18px;
+    border-radius:10px;border:1px solid var(--line);
+    image-rendering:auto;
+  }
+  .err{color:#ff8e8e;font-size:.9rem;margin-top:14px;line-height:1.8}
+</style>
+</head>
+<body>
+<main class="card">
+
+  <!-- مرحله ۱: انتخاب عکس -->
+  <section id="v-pick" class="view on">
+    <h1>ابزار عکس ۳۰۰×۳۰۰</h1>
+    <p class="sub">عکس را انتخاب کن. پردازش خودکار انجام می‌شود و فقط فایل نهایی را دانلود می‌کنی.</p>
+    <label class="drop" id="drop">
+      <b>انتخاب عکس</b>
+      <span>یا عکس را اینجا رها کن</span>
+      <input type="file" id="file" accept="image/*">
+    </label>
+    <div class="err" id="err" hidden></div>
+  </section>
+
+  <!-- مرحله ۲: لودینگ -->
+  <section id="v-load" class="view">
+    <div class="ring" aria-hidden="true"></div>
+    <div class="pct" id="pct">0%</div>
+    <div class="bar"><i id="barfill"></i></div>
+    <div class="hint">در حال آماده‌سازی عکس…</div>
+  </section>
+
+  <!-- مرحله ۳: دانلود -->
+  <section id="v-done" class="view">
+    <h1>عکس آماده است</h1>
+    <p class="sub">&nbsp;</p>
+    <canvas id="out" class="result" width="300" height="300"></canvas>
+    <a id="dl" class="btn" download="300x300.png">دانلود 300x300.png</a>
+    <button class="btn ghost" id="again" type="button">عکس جدید</button>
+  </section>
+
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const SIZE = 300;
+  const EXPOSURE = -3;      // Adjustments > Exposure (استاپ، در فضای نور خطی)
+  const NOISE_SCALE = 100;  // ضریب شدت Add Noise (مقدار بیشتر = نویز قوی‌تر)
+
+  const $ = id => document.getElementById(id);
+  const views = { pick: $('v-pick'), load: $('v-load'), done: $('v-done') };
+  const show = n => { for (const k in views) views[k].classList.toggle('on', k === n); };
+
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const rndInt = (a, b) => Math.floor(rnd(a, b + 1));
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+  function setProgress(p){
+    const v = Math.round(p);
+    $('pct').textContent = v + '%';
+    $('barfill').style.width = v + '%';
+  }
+
+  /* ---------- ابزارهای پردازش به سبک Paint.NET ----------
+   هر لایه: Float32Array با ۴ کانال RGBA (رنگ‌ها premultiplied، مقدار 0..255) */
+
+  const N = SIZE * SIZE;
+
+  function layerFromImageData(d){
+    const L = new Float32Array(N * 4);
+    for (let i = 0; i < N * 4; i += 4){
+      const a = d[i+3];
+      L[i]   = d[i]   * a / 255;
+      L[i+1] = d[i+1] * a / 255;
+      L[i+2] = d[i+2] * a / 255;
+      L[i+3] = a;
+    }
+    return L;
+  }
+
+  // Adjustments > Black and White  (وزن‌های Paint.NET: 19595 / 38470 / 7471 از ۶۵۵۳۶)
+  function toBlackWhite(src){
+    const L = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i += 4){
+      const y = (19595 * src[i] + 38470 * src[i+1] + 7471 * src[i+2]) / 65536;
+      L[i] = L[i+1] = L[i+2] = y;
+      L[i+3] = src[i+3];
+    }
+    return L;
+  }
+
+  // Effects > Blurs > Gaussian Blur  (هستهٔ Paint.NET: وزن‌ها 16*(i+1) و قرینه، پنجرهٔ لبه نرمال می‌شود)
+  function gaussianBlur(src, r){
+    const size = r * 2 + 1;
+    const w = new Float32Array(size);
+    for (let i = 0; i <= r; i++){ w[i] = 16 * (i + 1); w[size - 1 - i] = w[i]; }
+
+    const tmp = new Float32Array(src.length);
+    const out = new Float32Array(src.length);
+
+    // افقی
+    for (let y = 0; y < SIZE; y++){
+      for (let x = 0; x < SIZE; x++){
+        let c0 = 0, c1 = 0, c2 = 0, c3 = 0, ws = 0;
+        const x0 = Math.max(0, x - r), x1 = Math.min(SIZE - 1, x + r);
+        for (let xx = x0; xx <= x1; xx++){
+          const wt = w[xx - x + r], idx = (y * SIZE + xx) * 4;
+          c0 += src[idx] * wt; c1 += src[idx+1] * wt; c2 += src[idx+2] * wt; c3 += src[idx+3] * wt; ws += wt;
+        }
+        const o = (y * SIZE + x) * 4;
+        tmp[o] = c0 / ws; tmp[o+1] = c1 / ws; tmp[o+2] = c2 / ws; tmp[o+3] = c3 / ws;
+      }
+    }
+    // عمودی
+    for (let y = 0; y < SIZE; y++){
+      const y0 = Math.max(0, y - r), y1 = Math.min(SIZE - 1, y + r);
+      for (let x = 0; x < SIZE; x++){
+        let c0 = 0, c1 = 0, c2 = 0, c3 = 0, ws = 0;
+        for (let yy = y0; yy <= y1; yy++){
+          const wt = w[yy - y + r], idx = (yy * SIZE + x) * 4;
+          c0 += tmp[idx] * wt; c1 += tmp[idx+1] * wt; c2 += tmp[idx+2] * wt; c3 += tmp[idx+3] * wt; ws += wt;
+        }
+        const o = (y * SIZE + x) * 4;
+        out[o] = c0 / ws; out[o+1] = c1 / ws; out[o+2] = c2 / ws; out[o+3] = c3 / ws;
+      }
+    }
+    return out;
+  }
+
+  // Image > Flatten: ترکیب Normal از پایین به بالا؛ اپاسیتی لایه ۰ تا ۲۵۵ (مثل Layer Properties)
+  function flatten(layers){ // [{data, opacity}] از پایین به بالا
+    const out = new Float32Array(N * 4); // شفاف
+    for (const { data, opacity } of layers){
+      const o = opacity / 255;
+      for (let i = 0; i < out.length; i += 4){
+        const sa = data[i+3] * o;
+        const inv = 1 - sa / 255;
+        out[i]   = data[i]   * o + out[i]   * inv;
+        out[i+1] = data[i+1] * o + out[i+1] * inv;
+        out[i+2] = data[i+2] * o + out[i+2] * inv;
+        out[i+3] = sa + out[i+3] * inv;
+      }
+    }
+    return out;
+  }
+
+  // premultiplied → رنگ عادی (straight) ، آلفا جدا
+  function unpremultiply(L){
+    const rgb = new Float32Array(N * 3), a = new Float32Array(N);
+    for (let i = 0, p = 0, q = 0; i < L.length; i += 4, p += 3, q++){
+      const al = L[i+3];
+      a[q] = al;
+      if (al > 0){
+        const k = 255 / al;
+        rgb[p] = Math.min(255, L[i] * k); rgb[p+1] = Math.min(255, L[i+1] * k); rgb[p+2] = Math.min(255, L[i+2] * k);
+      }
+    }
+    return { rgb, a };
+  }
+
+  // Adjustments > Exposure : استاپ در فضای نور خطی
+  function applyExposure(rgb, stops){
+    const mul = Math.pow(2, stops);
+    const lut = new Float32Array(256);
+    for (let v = 0; v < 256; v++){
+      const c = v / 255;
+      const lin = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      let e = lin * mul; if (e > 1) e = 1;
+      const s = e <= 0.0031308 ? e * 12.92 : 1.055 * Math.pow(e, 1 / 2.4) - 0.055;
+      lut[v] = s * 255;
+    }
+    for (let i = 0; i < rgb.length; i++){
+      rgb[i] = lut[Math.min(255, Math.max(0, Math.round(rgb[i])))];
+    }
+  }
+
+  function gauss(){ // Box–Muller
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  // Effects > Noise > Add Noise (Intensity 0-100 ، Color Saturation 0-400 ، Coverage 0-100)
+  // مثل Paint.NET: dev = intensity² / 4 ، اشباع با درون‌یابی بین نویز روشنایی و نویز رنگی
+  function addNoise(rgb, intensity, saturation, coverage){
+    const dev = intensity * intensity / 4;
+    const sd = dev / 4096 * NOISE_SCALE;
+    const sat = saturation / 100;
+    for (let p = 0; p < rgb.length; p += 3){
+      if (Math.random() * 100 >= coverage) continue;
+      const nr = gauss() * sd, ng = gauss() * sd, nb = gauss() * sd;
+      const iy = (1225 * nr + 2404 * ng + 467 * nb) / 4096;
+      rgb[p]   += iy + (nr - iy) * sat;
+      rgb[p+1] += iy + (ng - iy) * sat;
+      rgb[p+2] += iy + (nb - iy) * sat;
+    }
+  }
+
+  /* ---------- جریان اصلی ---------- */
+
+  function loadImage(file){
+    return new Promise((res, rej) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); res(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('bad image')); };
+      img.src = url;
+    });
+  }
+
+  // Image > Resize (۳۰۰×۳۰۰ ، بدون قفل نسبت ، کیفیت بالا با کوچک‌کردن مرحله‌ای)
+  function resizeTo300(img){
+    const step = (src, nw, nh) => {
+      const c = document.createElement('canvas');
+      c.width = nw; c.height = nh;
+      const x = c.getContext('2d');
+      x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+      x.drawImage(src, 0, 0, nw, nh);
+      return c;
+    };
+    let cur = step(img, img.naturalWidth, img.naturalHeight);
+    while (cur.width !== SIZE || cur.height !== SIZE){
+      const nw = cur.width  > SIZE * 2 ? Math.ceil(cur.width  / 2) : SIZE;
+      const nh = cur.height > SIZE * 2 ? Math.ceil(cur.height / 2) : SIZE;
+      cur = step(cur, nw, nh);
+    }
+    return cur;
+  }
+
+  async function process(file){
+    show('load'); setProgress(0);
+    await nextFrame();
+
+    try {
+      const img = await loadImage(file);
+      setProgress(8); await nextFrame();
+
+      // ۱) ریسایز به ۳۰۰×۳۰۰
+      const c = resizeTo300(img);
+      const base = layerFromImageData(c.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      setProgress(16); await nextFrame();
+
+      // ۲) Duplicate Layer دو بار → سه لایه
+      const bottom = base.slice();
+      const middle = base.slice();
+      const top    = base.slice();
+      setProgress(22); await nextFrame();
+
+      // ۳) لایه‌ی پایین: Black and White
+      const bottomBW = toBlackWhite(bottom);
+      setProgress(32); await nextFrame();
+
+      // ۴) لایه‌ی دوم: Gaussian Blur رادیوس رندوم ۳ تا ۸
+      const middleBlur = gaussianBlur(middle, rndInt(3, 8));
+      setProgress(50); await nextFrame();
+
+      // ۵) لایه‌ی اول: Gaussian Blur رادیوس رندوم ۳ تا ۸
+      const topBlur = gaussianBlur(top, rndInt(3, 8));
+      setProgress(68); await nextFrame();
+
+      // ۶) اپاسیتی همه‌ی لایه‌ها: ۲۰۰ تا ۲۵۰ (مقیاس ۰ تا ۲۵۵ در Paint.NET)
+      const layers = [
+        { data: bottomBW,   opacity: rndInt(200, 250) },
+        { data: middleBlur, opacity: rndInt(200, 250) },
+        { data: topBlur,    opacity: rndInt(200, 250) }
+      ];
+
+      // ۷) ادغام (Flatten)
+      const { rgb, a } = unpremultiply(flatten(layers));
+      setProgress(78); await nextFrame();
+
+      // ۸) Exposure -3
+      applyExposure(rgb, EXPOSURE);
+      setProgress(88); await nextFrame();
+
+      // ۹) Add Noise: Intensity رندوم ۳۰ تا ۶۰ ، Color Saturation 100 ، Coverage 100
+      addNoise(rgb, rndInt(30, 60), 100, 100);
+      setProgress(96); await nextFrame();
+
+      // خروجی PNG
+      const out = $('out');
+      const octx = out.getContext('2d');
+      const id = octx.createImageData(SIZE, SIZE);
+      for (let i = 0, p = 0; i < N; i++, p += 3){
+        const k = i * 4;
+        id.data[k]   = Math.min(255, Math.max(0, Math.round(rgb[p])));
+        id.data[k+1] = Math.min(255, Math.max(0, Math.round(rgb[p+1])));
+        id.data[k+2] = Math.min(255, Math.max(0, Math.round(rgb[p+2])));
+        id.data[k+3] = Math.min(255, Math.max(0, Math.round(a[i])));
+      }
+      octx.putImageData(id, 0, 0);
+
+      const blob = await new Promise(r => out.toBlob(r, 'image/png'));
+      const old = $('dl').dataset.url;
+      if (old) URL.revokeObjectURL(old);
+      const url = URL.createObjectURL(blob);
+      $('dl').href = url; $('dl').dataset.url = url;
+
+      setProgress(100);
+      await new Promise(r => setTimeout(r, 350));
+      show('done');
+    } catch (e) {
+      show('pick');
+      const err = $('err');
+      err.hidden = false;
+      err.textContent = 'این فایل به‌عنوان عکس باز نشد. یک عکس دیگر انتخاب کن.';
+    }
+  }
+
+  /* ---------- رویدادها ---------- */
+  const fileInput = $('file'), drop = $('drop');
+
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0];
+    $('err').hidden = true;
+    if (f) process(f);
+    fileInput.value = '';
+  });
+
+  ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add('over');
+  }));
+  ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove('over');
+  }));
+  drop.addEventListener('drop', e => {
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    $('err').hidden = true;
+    if (f) process(f);
+  });
+
+  $('again').addEventListener('click', () => show('pick'));
+})();
+</script>
+</body>
+</html>
